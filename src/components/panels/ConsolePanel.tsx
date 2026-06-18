@@ -69,7 +69,7 @@ export function ConsolePanel() {
     <div className="flex h-full flex-col gap-[3px] bg-background" onMouseDown={onMouseDown}>
       <div
         className={cn(
-          "mx-0.5 mt-0.5 flex items-center justify-between gap-2 rounded-md px-3 py-1.5 transition-colors",
+          "mx-0.5 mt-0.5 flex items-center justify-between gap-2 rounded-md px-3 py-0.5 transition-colors",
           isFocused ? "bg-secondary" : "bg-card",
         )}
       >

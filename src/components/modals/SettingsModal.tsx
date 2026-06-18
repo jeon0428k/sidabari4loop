@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FolderOpen } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -50,6 +50,8 @@ export function SettingsModal({ open, onOpenChange }: Props) {
   const [configPath, setConfigPath] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // 터미널 글꼴 크기는 이 모달에서 편집하지 않는다(Ctrl+휠 전용). 로드값을 보존해 저장 시 그대로 기록.
+  const fontSizeRef = useRef(21);
 
   // 열릴 때마다 현재 설정을 다시 읽어 폼 초기화.
   useEffect(() => {
@@ -66,6 +68,7 @@ export function SettingsModal({ open, onOpenChange }: Props) {
         setExtraArgs(c.claude_code_sessions.main.extra_args);
         setVerbose(c.ui.verbose_hook_logs);
         setGate(c.ui.gate_dangerous_tools);
+        fontSizeRef.current = c.ui.terminal_font_size;
         setOperatingPrompt(c.supervisor.operating_prompt);
         setMaxIterations(c.supervisor.max_iterations);
         setContextReset(c.supervisor.context_reset);
@@ -107,7 +110,11 @@ export function SettingsModal({ open, onOpenChange }: Props) {
           extra_args: extraArgs.trim(),
         },
       },
-      ui: { verbose_hook_logs: verbose, gate_dangerous_tools: gate },
+      ui: {
+        verbose_hook_logs: verbose,
+        gate_dangerous_tools: gate,
+        terminal_font_size: fontSizeRef.current,
+      },
       supervisor: {
         operating_prompt: operatingPrompt,
         max_iterations: Math.max(1, Math.floor(maxIterations) || 1),

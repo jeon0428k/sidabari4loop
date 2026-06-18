@@ -30,6 +30,10 @@ type Props = {
   // scrollback에 자연스럽게 누적돼 시작 직후부터 scrollbar가 보이는 부작용이 있다.
   // 그런 패널엔 0을 넘겨 scrollback을 비활성화한다 (사용자가 옛 frame을 위로 스크롤해 볼 수 없게 됨).
   scrollback?: number;
+  // 초기 글꼴 크기(px). 미지정 시 21. Ctrl+휠 조정의 시작값.
+  fontSize?: number;
+  // Ctrl+휠로 글꼴 크기가 바뀔 때 호출 — 설정 저장용(상위가 영속화).
+  onFontSizeChange?: (size: number) => void;
 };
 
 type Status = "starting" | "running" | "exited-fallback" | "stopped" | "error";
@@ -74,6 +78,8 @@ export function PtyTerminal({
   onSessionChange,
   spawnDelayMs,
   scrollback,
+  fontSize,
+  onFontSizeChange,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerminal | null>(null);
@@ -89,6 +95,8 @@ export function PtyTerminal({
   onSessionChangeRef.current = onSessionChange;
   const onExitRef = useRef(onExit);
   onExitRef.current = onExit;
+  const onFontSizeChangeRef = useRef(onFontSizeChange);
+  onFontSizeChangeRef.current = onFontSizeChange;
 
   const [status, setStatus] = useState<Status>("starting");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -216,7 +224,7 @@ export function PtyTerminal({
       // Win11 우선 — Cascadia Mono(터미널 기본)를 첫 자리에. App.css `--font-mono`와 동일.
       fontFamily:
         '"Cascadia Mono", "Cascadia Code", ui-monospace, Consolas, "SF Mono", Menlo, "Liberation Mono", monospace',
-      fontSize: 21,
+      fontSize: fontSize ?? 21,
       fontWeight: "300",
       fontWeightBold: "500",
       lineHeight: 1.0,
@@ -264,6 +272,31 @@ export function PtyTerminal({
     });
     resizeObserver.observe(container);
 
+    // Ctrl + 마우스 휠로 터미널 글꼴 크기 ±1 조정 (밀면 +, 당기면 -).
+    // capture 단계에서 가로채 xterm 기본 스크롤·웹뷰 줌을 막는다(passive:false라 preventDefault 가능).
+    const handleWheelZoom = (e: WheelEvent) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const cur = term.options.fontSize ?? 21;
+      const next = e.deltaY < 0 ? cur + 1 : cur - 1;
+      const clamped = Math.min(48, Math.max(8, next));
+      if (clamped === cur) return;
+      term.options.fontSize = clamped;
+      try {
+        fit.fit();
+      } catch {
+        // 컨테이너 크기 미정인 경우 무시
+      }
+      const id = sessionIdRef.current;
+      if (id) ptyResize(id, term.rows, term.cols).catch(() => {});
+      onFontSizeChangeRef.current?.(clamped);
+    };
+    container.addEventListener("wheel", handleWheelZoom, {
+      passive: false,
+      capture: true,
+    });
+
     // 첫 spawn — primary. spawnDelayMs가 있으면 시차 후 spawn (claude race 회피).
     phaseRef.current = "primary";
     let initTimer: number | null = null;
@@ -279,6 +312,7 @@ export function PtyTerminal({
     return () => {
       disposedRef.current = true;
       if (initTimer !== null) window.clearTimeout(initTimer);
+      container.removeEventListener("wheel", handleWheelZoom, true);
       resizeObserver.disconnect();
       unlistenDataRef.current?.();
       unlistenExitRef.current?.();

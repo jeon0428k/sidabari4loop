@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Play, Rocket, Settings, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { usePanelFocus } from "@/hooks/usePanelFocus";
 import { PtyTerminal } from "@/components/terminal/PtyTerminal";
-import { loadConfig } from "@/lib/config";
+import { loadConfig, saveConfig } from "@/lib/config";
 import { type SpawnOptions } from "@/lib/pty";
 import { useAppStore } from "@/store/useAppStore";
 import { ActivityIndicator } from "@/components/monitor/ActivityIndicator";
@@ -18,7 +18,7 @@ import { BootstrapModal } from "@/components/modals/BootstrapModal";
 
 // key는 PtyTerminal remount 트리거. claudeRestartKey를 바로 key로 쓰지 않고,
 // 새 설정 로드가 끝난 뒤에만 갱신해 "옛 spawn으로 먼저 remount되는" race를 막는다.
-type Resolved = { spawn: SpawnOptions; key: number };
+type Resolved = { spawn: SpawnOptions; key: number; fontSize: number };
 
 export function MainClaudePanel() {
   const { isFocused, onMouseDown } = usePanelFocus("main-claude");
@@ -53,6 +53,7 @@ export function MainClaudePanel() {
             env: { SIDABARI4LOOP_PANEL_ID: "main-claude" },
           },
           key: claudeRestartKey,
+          fontSize: c.ui.terminal_font_size,
         });
       })
       .catch((e: unknown) => {
@@ -62,6 +63,7 @@ export function MainClaudePanel() {
         setResolved({
           spawn: { command: "", env: { SIDABARI4LOOP_PANEL_ID: "main-claude" } },
           key: claudeRestartKey,
+          fontSize: 21,
         });
         console.warn("[MainClaudePanel] config 로드 실패, 기본 셸로 폴백:", message);
       });
@@ -71,11 +73,34 @@ export function MainClaudePanel() {
     // claudeRestartKey 변경 시 설정을 다시 읽어 새 spawn 옵션 적용.
   }, [claudeRestartKey]);
 
+  // Ctrl+휠 글꼴 크기 변경을 설정에 영속화. 휠이 연달아 발생하므로 debounce(500ms).
+  // PTY 재시작(restartAllClaudes)을 트리거하지 않도록 saveConfig만 직접 호출하고,
+  // 최신 설정을 다시 읽어 다른 필드를 보존한 채 ui.terminal_font_size만 갱신한다.
+  const saveTimerRef = useRef<number | null>(null);
+  const handleFontSizeChange = useCallback((size: number) => {
+    if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = window.setTimeout(() => {
+      saveTimerRef.current = null;
+      loadConfig()
+        .then((c) =>
+          saveConfig({ ...c, ui: { ...c.ui, terminal_font_size: size } }),
+        )
+        .catch(() => {});
+    }, 500);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
+    },
+    [],
+  );
+
   return (
     <div className="flex h-full flex-col gap-[3px] bg-background" onMouseDown={onMouseDown}>
       <div
         className={cn(
-          "mx-0.5 mt-0.5 flex items-center justify-between gap-2 rounded-md px-3 py-1.5 transition-colors",
+          "mx-0.5 mt-0.5 flex items-center justify-between gap-2 rounded-md px-3 py-0.5 transition-colors",
           isFocused ? "bg-secondary" : "bg-card",
         )}
       >
@@ -132,6 +157,8 @@ export function MainClaudePanel() {
             key={resolved.key}
             spawn={resolved.spawn}
             onSessionChange={setMainClaudeSessionId}
+            fontSize={resolved.fontSize}
+            onFontSizeChange={handleFontSizeChange}
           />
         ) : (
           <div className="flex h-full items-center justify-center text-xs text-muted-foreground">

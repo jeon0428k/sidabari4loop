@@ -35,8 +35,14 @@ export const UiConfigSchema = z
     verbose_hook_logs: z.boolean().default(false),
     // Bash 도구 호출 시 PreToolUse 게이트 모달 활성 (기본 off).
     gate_dangerous_tools: z.boolean().default(false),
+    // 메인 Claude 터미널 글꼴 크기(px). Ctrl+휠로 조정, 마지막 값 유지. 범위 8~48.
+    terminal_font_size: z.number().int().min(8).max(48).default(21),
   })
-  .default({ verbose_hook_logs: false, gate_dangerous_tools: false });
+  .default({
+    verbose_hook_logs: false,
+    gate_dangerous_tools: false,
+    terminal_font_size: 21,
+  });
 
 // 턴 사이 컨텍스트 리셋 방식 (Rust ContextResetMode와 1:1).
 //  - clear:   /clear — 컨텍스트 미보존(새 세션)

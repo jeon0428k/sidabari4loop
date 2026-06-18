@@ -54,6 +54,8 @@ pub struct UiConfig {
     pub verbose_hook_logs: bool,
     /// Bash 도구 호출 시 PreToolUse 게이트 모달 활성 (기본 off).
     pub gate_dangerous_tools: bool,
+    /// 메인 Claude 터미널 글꼴 크기(px). Ctrl+마우스 휠로 ±1 조정, 마지막 값을 유지한다.
+    pub terminal_font_size: u16,
 }
 
 impl Default for UiConfig {
@@ -61,6 +63,7 @@ impl Default for UiConfig {
         Self {
             verbose_hook_logs: false,
             gate_dangerous_tools: false,
+            terminal_font_size: 21,
         }
     }
 }
