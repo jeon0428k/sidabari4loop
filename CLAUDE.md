@@ -13,6 +13,7 @@
 - **본질**: Claude Code를 로컬 PTY에서 실행하고, Claude Code의 **Hook 이벤트**를 수신해 정해진 동작을 수행하는 1인용 데스크톱 도구. 원본 **Sidabari**(EC2 배포·진단 자동화)에서 SSH/SFTP/빌드/배포/진단을 모두 제거하고 분리한 파생 프로그램이다.
 - **저작**: 코드·문서 100% Claude Code가 작성·유지보수한다. 인간 협업자는 요구사항·사양·검수만 담당한다 — **이 문서를 읽는 너(Claude Code)가 이 프로젝트의 저자이자 유지보수자**다.
 - **기술 스택**: Tauri 2.x + Vite + React 19 + TypeScript + Rust
+- **대상 플랫폼**: **macOS가 기준(primary) 플랫폼**이며, **Windows 11에서도 동작해야 한다.** 두 OS 모두 지원 대상이다 — 개발·검증의 1차 기준은 macOS이지만, OS 의존 코드(경로, PTY/npm shim, 권한, 줄바꿈, 파일 watch)는 Windows 11에서도 깨지지 않도록 작성·확인한다. macOS 전용 가정을 박지 않는다. 관련 처리: `pty.rs`(Windows shim·ConPTY), 설정/데이터 경로(`%APPDATA%` vs `~/Library/Application Support`), 파일 권한(Unix 0600/0700, Windows는 사용자 ACL 가정).
 - **상세 사양**: `SIDABARI4LOOP_SPEC.md` 참조
 
 ---
@@ -244,3 +245,75 @@
 - [ ] 버튼은 `<Button>`, 의미 아이콘은 `[&_svg]:text-X`.
 - [ ] 텍스트 위계(강조/일반/흐림) 명확히.
 - [ ] `npm run build` 통과.
+
+## 부록 D: 빌드·테스트·실행 명령
+
+Tauri 2 앱이라 **프론트엔드(Vite/Vitest)** 와 **백엔드(Cargo)** 를 따로 다룬다. 실제 개발은 거의 `npm run tauri dev` 한 줄로 한다 (Rust + Vite를 함께 띄운다).
+
+| 목적 | 명령 |
+|---|---|
+| 의존성 설치 | `npm install` (Rust crate는 첫 빌드 시 cargo가 자동 fetch) |
+| 데스크톱 앱 개발 실행 (권장) | `npm run tauri dev` |
+| 데스크톱 앱 릴리스 빌드 | `npm run tauri build` |
+| 프론트엔드만 (브라우저, Tauri IPC 없음) | `npm run dev` |
+| 프론트엔드 타입체크+번들 | `npm run build` (`tsc && vite build`) |
+| 프론트엔드 단위 테스트 전체 | `npm test` (`vitest run`) |
+| 단일 테스트 파일 | `npx vitest run src/lib/buildOrder.test.ts` |
+| 테스트 이름으로 필터 | `npx vitest run -t evaluateLoopSignal` |
+| 테스트 watch 모드 | `npx vitest` |
+| Rust 테스트 | `cd src-tauri && cargo test` |
+| Rust 단일 테스트 | `cd src-tauri && cargo test <이름>` |
+| Rust 린트 (경고 무시 금지, §3.1) | `cd src-tauri && cargo clippy` |
+| 보안 감사 (§1.2.5) | `npm audit` · `cd src-tauri && cargo audit` |
+
+- 테스트 환경은 `node`(브라우저 DOM 없음) — 순수 로직 테스트만 둔다 (`vitest.config.ts`). 현재 테스트: `buildOrder.test.ts`, `supervisor.test.ts`.
+- **현재 Rust 단위 테스트는 없다.** 그러나 §4 정책상 보안 관련 함수(`hook_installer::merge_hooks`/`validate_dir`, `supervisor::read_project_text`의 경로 검증, `classify_event`)는 테스트 대상이다 — 해당 코드를 건드리면 `#[cfg(test)]` 모듈을 함께 추가한다.
+- `scripts/transcript_to_md.py` — Claude Code 트랜스크립트(jsonl)를 사람이 읽을 md로 변환하는 보조 도구.
+
+## 부록 E: 아키텍처 지도
+
+여러 파일을 읽어야 보이는 "큰 그림". 세부 사양은 `SIDABARI4LOOP_SPEC.md`, 운영 규약(루프 계약)은 `SIDABARI4LOOP_CONTRACT.md`.
+
+### E.1 두 프로세스, 파일 기반 IPC
+
+```
+React(Webview)  ──Tauri invoke/listen──  Rust(core)  ──portable-pty──  claude / shell PTY
+                                              │
+                                     파일 기반 IPC (notify watcher)
+                                              │
+   Claude Code 훅 스크립트 ── events.jsonl / req-·resp- 파일 ──┘
+   (append-event.js, gate.js)
+```
+
+- **Rust 진입점**: `src-tauri/src/lib.rs` `run()` — 플러그인 등록, 상태(`PtyState`/`AuditDb`/`HookBusState`) manage, `invoke_handler`에 모든 command 나열. 새 Tauri command를 추가하면 **반드시 여기 핸들러 목록에도 등록**.
+- **프론트 진입점**: `src/App.tsx` — 가시 UI(`MainLayout`)와 **비가시 컨트롤러 3종**(`HookBridge`, `SupervisorController`, `GateModal`)을 함께 마운트. 로직의 대부분은 이 비가시 컴포넌트에 있다.
+
+### E.2 Hook 이벤트 흐름 (핵심 데이터 경로)
+
+1. 사용자 프로젝트의 `.claude/settings.local.json`에 훅이 설치된다 (`hook_installer.rs` — `_sidabari4loop` 마커 영역만 병합/교체, 기존 설정은 백업 후 보존).
+2. Claude Code가 훅 발화 → `append-event.js`가 `<app_data>/sidabari4loop-hooks/events.jsonl`에 append (일방향). PreToolUse 게이트는 `gate.js`가 `req-<uuid>.json` 쓰고 `resp-<uuid>.json`을 기다림 (양방향).
+3. `hooks_bus.rs`의 `notify` watcher가 `events.jsonl` tail + req/resp 페어를 감시 → `classify_event`로 분류 → Tauri 이벤트로 webview에 emit. 동시에 `audit_log.rs`가 SQLite(`audit.sqlite3`)에 적재.
+4. `src/lib/hooks.ts`의 `listenHookEvent`가 받아 → `HookBridge`(토스트·컨텍스트 점유 갱신)와 `SupervisorController`(루프 상태기계)가 소비.
+5. 게이트 응답: 사람이 `GateModal`에서 허용/거부 → `hook_gate_respond` command → `resp-` 파일 작성. **무응답은 deny**(§1.3).
+
+> "resp 파일을 쓸 수 있는 권한 = 게이트 결정 권한"이 보안 모델. 훅 디렉토리는 Unix 0700.
+
+### E.3 Supervisor 자동 연속 루프 (사양서 §3.5)
+
+외부에서 메인 Claude를 "운전"해 한 턴씩 진행시키는 상태기계. 구현은 `src/components/monitor/SupervisorController.tsx`, 순수 로직은 `src/lib/supervisor.ts`(테스트 대상), 파일 읽기/컨텍스트 추정은 Rust `supervisor.rs`.
+
+- 상태: `running`(턴 작업 중, Stop 대기) → `resetting`(/clear·/compact 주입 후 SessionStart 대기) → 운영 프롬프트 재주입 → `running`.
+- **정지 판정은 `docs/PROGRESS.md`를 파싱**(`evaluateLoopSignal`): `TASK_COMPLETE`이고 미해결(`OPEN:`) 없음 → 완료 정지 / `HALT:` → 정지 / 그 외 → 계속. false-negative(신호 못 잡음)는 "완료 오판·정지"보다 안전한 쪽.
+- 진행 시각화는 `docs/BUILD_ORDER.md`의 체크박스를 `buildOrder.ts`로 파싱해 '진행' 패널(`ProgressPanel`)에 표시.
+- 운영 프롬프트 기본값은 `DEFAULT_OPERATING_PROMPT`(supervisor.ts) — 계약(PROGRESS/TASK_COMPLETE/OPEN/HALT)과 일치시켜 유지.
+- 안전장치(모두 §1.3 준수, 자동 재시도/재spawn 없음): 중복 Stop 가드, 최대 반복 상한, /clear flaky 재주입(`CLEAR_RETRY_MS`), /compact 대기 한도(`COMPACT_WAIT_MS`, 초과 시 사람 결정), idle 스톨 넛지(`MAX_STALL_NUDGES`), 제출 미확인 시 Enter 재전송(`SUBMIT_CONFIRM_MS`).
+
+### E.4 PTY
+
+- `pty.rs` — `portable-pty`의 `CommandBuilder`로 프로그램·인자를 **개별 전달**(문자열 조합 금지, §1.2.1). Windows npm shim은 `cmd.exe /c <abs.cmd>`로 인자 분리 래핑.
+- 프론트는 `PtyTerminal.tsx`(xterm.js) + `src/lib/pty.ts` IPC 래퍼. `claudeRestartKey`(store) 변경 시 `MainClaudePanel`의 PTY가 통째로 unmount/remount → 새 spawn → 새 `settings.local.json` 로드.
+
+### E.5 상태·설정
+
+- 전역 상태: `src/store/useAppStore.ts` (Zustand). 패널 포커스, 콘솔 이벤트, 패널별 활동(thinking/idle)·현재 도구, 컨텍스트 점유, supervisor 토글/반복 카운터, `claudeRestartKey`, 메인 세션 id.
+- 설정: `src/lib/config.ts` (Zod 런타임 검증) ↔ Rust `config.rs`. Tauri `app_config_dir` 안에만 저장. 외부 입력(IPC 응답 포함)은 Zod로 검증 후 사용(§3.2).
