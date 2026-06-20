@@ -43,9 +43,46 @@ type Status = "starting" | "running" | "exited-fallback" | "stopped" | "error";
 //   xterm 기본은 Ctrl+V를 raw \x16(SYN)으로 PTY에 보냄 — paste가 아님. Ctrl+Shift+V는 브라우저
 //   paste 이벤트가 발화되어 xterm 내부 paste 경로를 타므로 작동. Ctrl+V도 같은 경로로 라우팅한다.
 // Ctrl+A: 전체 선택 (readline의 \x01이 PTY로 가지 않게 차단).
-function attachKeyShortcuts(term: XTerminal) {
+//
+// Shift+Enter: 개행(줄바꿈) — xterm 기본은 \r(=Enter, 제출)이라 가로채 Meta+Enter(\x1b\r)를 보낸다.
+//   Claude Code 는 Meta+Enter 를 "줄바꿈 삽입"으로 처리한다.
+// Home / End (및 Cmd+←/→): 줄 맨 앞/뒤로 커서 이동.
+//   윈도우 키보드의 Home/End 는 macOS 에서 Cmd+←/→ 로 들어오는 경우가 많고(관찰함), Cmd+←/→ 는
+//   macOS 의 줄 맨앞/맨뒤 관례이기도 하다. 실제 Home/End 키와 Cmd+←/→ 를 모두 받아 커서키 시퀀스를
+//   보낸다(애플리케이션 커서키 모드면 \x1bOH/\x1bOF, 아니면 \x1b[H/\x1b[F).
+//
+// onImeKeydown: 모든 keydown에서 가장 먼저 호출된다. IME 처리 키(keyCode 229)면 true 를 반환해
+//   xterm 의 keydown 처리를 건너뛴다(조합 안 된 자모를 keydown 경로로 PTY에 보내지 않게). 이 훅이
+//   xterm 의 _keyDown 안에서(=xterm 이 무언가 emit 하기 전에) 실행되므로 IME 상태 플래그가 항상
+//   제때 설정된다 — 단어 첫 자모가 새던 타이밍 버그를 막는다.
+function attachKeyShortcuts(
+  term: XTerminal,
+  onImeKeydown: (e: KeyboardEvent) => boolean,
+  sendPty: (data: string) => void,
+) {
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== "keydown") return true;
+    if (onImeKeydown(e)) return false;
+
+    // Shift+Enter → 개행. Claude Code 는 Ctrl+J(\x0a) 를 "줄바꿈 삽입"(chat:newline)으로 처리한다.
+    //   주의: return false 로 xterm keydown 을 막아도, 브라우저 기본동작이 헬퍼 textarea 에 줄바꿈을
+    //   넣어 input 이벤트 → xterm 이 \r 을 또 보낸다(= 제출). 그래서 preventDefault 로 기본동작까지 막고
+    //   Ctrl+J 만 보낸다.
+    if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      sendPty("\n");
+      return false;
+    }
+    // Home / End — 실제 키 또는 Cmd+←/→ (윈도우 키보드 리매핑 대응). 다른 보조키 조합은 제외.
+    const cmdOnly = e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey;
+    const isHome = e.key === "Home" || (e.key === "ArrowLeft" && cmdOnly);
+    const isEnd = e.key === "End" || (e.key === "ArrowRight" && cmdOnly);
+    if (isHome || isEnd) {
+      const app = term.modes.applicationCursorKeysMode;
+      sendPty(isHome ? (app ? "\x1bOH" : "\x1b[H") : app ? "\x1bOF" : "\x1b[F");
+      return false;
+    }
+
     const mod = (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey;
     if (!mod) return true;
     if (e.key === "c") {
@@ -248,10 +285,99 @@ export function PtyTerminal({
       // 컨테이너 크기 미정인 경우 무시
     }
 
-    attachKeyShortcuts(term);
+    // --- 한글/CJK IME 처리 (macOS WKWebView) ---
+    // WKWebView는 한글 입력 시 compositionstart/update/end 이벤트를 발생시키지 않고,
+    // Input Events L2의 `input` 이벤트(inputType="insertReplacementText")로 조합 텍스트를 준다
+    // (ㅎ→하→한). xterm 6은 이 경로를 처리하지 못해 조합 안 된 호환 자모(U+314E 등)를 PTY로 보낸다.
+    // 그래서 textarea의 input 이벤트를 직접 읽어 "미확정(marked) 텍스트 교체" 모델을 PTY 바이트로
+    // 번역한다: 이전 미확정만큼 백스페이스(\x7f) 후 새 텍스트 전송. xterm이 보내는 자모는 onData에서
+    // 버린다. (조합 이벤트가 정상 발생하는 환경에서는 keyCode!==229라 이 경로가 동작하지 않아 무해.)
+    let imeActive = false; // 직전 keydown이 IME 처리(keyCode 229)였는가
+    let imeMarked = ""; // 현재 PTY에 보낸 미확정(조합 중) 텍스트
+    const cpLen = (s: string) => [...s].length; // 코드포인트 수(백스페이스 횟수)
+
+    // IME keydown 플래그는 반드시 xterm 의 keydown 처리보다 먼저 설정돼야 한다(단어 첫 자모 누수 방지).
+    // attachCustomKeyEventHandler 안에서 처리한다.
+    attachKeyShortcuts(term, (e) => {
+      if (e.keyCode === 229) {
+        imeActive = true;
+        return true; // IME 키 — xterm 이 keydown 경로로 자모를 보내지 않게 건너뛴다
+      }
+      // 일반 키(스페이스·엔터·백스페이스 등)는 조합을 확정한다. xterm 이 그대로 처리.
+      // imeMarked 는 여기서 비우지 않는다 — 내비게이션/엔터 키는 keydown 직후 IME 가 미확정 텍스트를
+      // "확정"하며 같은 텍스트로 insertReplacementText 를 한 번 더 보낸다. 그때 imeMarked 가 남아 있어야
+      // "이전만큼 백스페이스 + 재전송" = 무변화(no-op) 가 되어 음절이 중복되지 않는다.
+      imeActive = false;
+      return false;
+    }, (data) => {
+      const id = sessionIdRef.current;
+      if (id) ptyWrite(id, data).catch(() => {});
+    });
+
+    // 비ASCII(코드포인트 > 0x7F) 포함 여부 — IME/조합 입력 판별에 쓴다(일반 ASCII 타이핑 제외).
+    const hasNonAscii = (s: string) => [...s].some((c) => c.codePointAt(0)! > 0x7f);
+    // IME(조합) 입력 판별: 조합 교체, 비ASCII 삽입, 또는 조합 중 백스페이스.
+    const isImeInput = (inputType: string, data: string) =>
+      inputType === "insertReplacementText" ||
+      inputType === "insertCompositionText" ||
+      inputType === "insertFromComposition" ||
+      (inputType === "insertText" && hasNonAscii(data)) ||
+      (inputType === "deleteContentBackward" && imeMarked.length > 0);
+
+    const ta = term.textarea;
+    if (ta) {
+      // 첫 자모 누수 방지의 핵심:
+      // WKWebView 는 첫 자모에서 (검증함) beforeinput → xterm onData(자모) → input 순으로 발생시킨다.
+      // 즉 xterm 이 input 보다 먼저 onData 로 자모를 흘린다. 그래서 그보다 더 앞서는 beforeinput(capture)
+      // 에서 imeActive 를 켜둔다 → 뒤이은 xterm onData 가 확실히 드롭된다. 실제 전송은 input 에서 한다.
+      ta.addEventListener(
+        "beforeinput",
+        (e) => {
+          const ie = e as InputEvent;
+          if (isImeInput(ie.inputType, ie.data ?? "")) imeActive = true;
+        },
+        true,
+      );
+      ta.addEventListener(
+        "input",
+        (e) => {
+          const ie = e as InputEvent;
+          const data = ie.data ?? "";
+          // 일반 ASCII 입력·붙여넣기는 xterm 에 맡긴다.
+          if (!imeActive && !isImeInput(ie.inputType, data)) return;
+
+          imeActive = true; // 방어적 재확인
+          const isReplace =
+            ie.inputType === "insertReplacementText" ||
+            ie.inputType === "insertCompositionText" ||
+            ie.inputType === "insertFromComposition";
+          const id = sessionIdRef.current;
+          let send: string;
+          if (ie.inputType === "deleteContentBackward") {
+            // 조합 중 백스페이스: 미확정만큼 지운다.
+            send = "\x7f".repeat(cpLen(imeMarked));
+            imeMarked = "";
+          } else if (isReplace) {
+            // 조합 중 음절 교체: 이전 미확정만큼 지우고 새 음절 전송.
+            send = "\x7f".repeat(cpLen(imeMarked)) + data;
+            imeMarked = data;
+          } else {
+            // insertText (새 음절의 첫 자모). 이전 음절은 확정(지우지 않음)하고 새로 시작.
+            send = data;
+            imeMarked = data;
+          }
+          if (id && send) ptyWrite(id, send).catch(() => {});
+        },
+        true,
+      );
+    }
 
     // onData listener는 한 번만 등록. sessionId 변경은 ref로.
     term.onData((data) => {
+      // IME 활성 중 xterm이 보내는 (조합 안 된) 자모는 버린다 — 위 input 핸들러가 올바른 바이트를 보냄.
+      // "비ASCII만" 버린다: 제어문자(\r 엔터, \x7f 백스페이스, \x03 등)와 ESC 시퀀스는 IME 중에도
+      // 통과시켜야 한다(엔터가 IME 잔여 활성 상태에서 삼켜지지 않도록).
+      if (imeActive && hasNonAscii(data)) return;
       const id = sessionIdRef.current;
       if (id) ptyWrite(id, data).catch(() => {});
     });
