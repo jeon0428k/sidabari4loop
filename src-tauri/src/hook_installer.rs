@@ -63,6 +63,9 @@ fn build_hook_specs(
         ("Notification", "", mk_append("Notification")),
         ("PreToolUse", "", mk_append("PreToolUse")),
         ("PostToolUse", "", mk_append("PostToolUse")),
+        // 운영 프롬프트 주입의 "제출됨" 확인 신호 — Supervisor 제출 워치독이 사용한다
+        // (주입 후 이 이벤트가 없으면 Enter가 미제출된 것으로 보고 재전송).
+        ("UserPromptSubmit", "", mk_append("UserPromptSubmit")),
     ];
     if enable_gate {
         // matcher="Bash" — Bash 도구 호출만 모달 차단. 다른 PreToolUse는 위 append만 발사.

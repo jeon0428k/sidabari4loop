@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 // 패널 포커스 추적용 ID.
-export type PanelId = "main-claude" | "console";
+export type PanelId = "main-claude" | "console" | "progress";
 
 export type ConsoleEvent = {
   id: string;

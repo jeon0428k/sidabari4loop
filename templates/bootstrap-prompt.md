@@ -60,8 +60,11 @@ OPEN[01]: (열린 결정/의문이 있으면. 없으면 이 줄 삭제)
 - (턴마다 한 줄씩 append)
 ```
 
-### 2) docs/BUILD_ORDER.md — 작업 정의
-CLAUDE.md의 범위를 '턴 하나에 끝낼 수 있는 단계들의 순서'로 분해해 적어라. 큰 Phase로 묶고 그 안을 세부 단계로.
+### 2) docs/BUILD_ORDER.md — 작업 정의 (체크박스 형식 엄수)
+CLAUDE.md의 범위를 '턴 하나에 끝낼 수 있는 단계들의 순서'로 분해해 적어라. Sidabari4Loop의 '진행' 화면이
+이 파일을 읽어 진행률을 보여주므로 형식을 지켜라:
+- 큰 묶음은 `## Phase N — 제목` 헤딩, 세부 단계는 `- [ ] STEP-ID 설명` 체크박스로.
+- 지금은 전부 미완료 `- [ ]`로 시작(아직 빌드 전). 자율 루프가 끝낸 단계를 `- [x]`로 바꾼다.
 
 ## 규칙
 - 사람에게 질문으로 멈추지 마라. 정말 사람이 정해야 할 핵심 결정은 docs/PROGRESS.md에 "OPEN[NN]: 내용" 줄로 남겨라.
@@ -79,6 +82,8 @@ CLAUDE.md의 범위를 '턴 하나에 끝낼 수 있는 단계들의 순서'로 
 docs/PROGRESS.md를 먼저 읽어라. `## 다음 할 일`의 한 단계만 수행하라(여러 단계 ❌).
 필요하면 docs/BUILD_ORDER.md로 다음 단계를 정하라.
 작업 후 docs/PROGRESS.md를 갱신하고(진행 로그 append, 다음 할 일 갱신, 끝난 OPEN 제거) 커밋하라.
+도메인 로직 step은 끝내기 전, 변경(diff)을 새 컨텍스트의 리뷰 서브에이전트로 검토하라(예: Task의 code-reviewer, 또는 /code-review).
+  실제 결함만 보고(스타일 사소한 지적으로 턴 막지 말 것), 고치거나 못 풀면 OPEN:으로 남겨라.
 상태 파일 이름을 바꾸지 마라 — 감독 루프는 오직 docs/PROGRESS.md만 추적한다(MEMORY.md 등 금지).
 사용자에게 묻지 마라 — 결정 불가 항목은 OPEN[NN]: 로, 멈춰야 하면 HALT: 로 PROGRESS에 남겨라.
 모든 작업이 끝났고 미해결(OPEN) 항목이 없으면 PROGRESS에 TASK_COMPLETE를 적어라.

@@ -69,9 +69,16 @@ export const DEFAULT_OPERATING_PROMPT = `너는 외부 감독 도구(Sidabari4Lo
    - 관련 테스트를 실제로 실행해 통과(그린)를 확인한다.
    - 빌드가 성공하는지 확인한다.
    - 기존에 통과하던 테스트가 깨지지 않았는지(회귀 없음) 확인한다.
+   - 독립 코드 리뷰: 이번 step 의 변경(diff)을 '새 컨텍스트'의 리뷰 서브에이전트로 검토한다
+     (예: Task 도구로 code-reviewer 호출, 또는 /code-review). 정확성·보안·회귀 관점의
+     '실제 결함'만 본다 — 스타일 사소한 지적으로 턴을 막지 마라.
+     실제 결함은 고쳐 게이트를 다시 통과시키고, 못 풀면 OPEN: 으로 남긴다.
+     순수 스캐폴딩/설정 step 은 생략 가능(도메인 로직 step 에 적용).
    - 게이트를 통과하지 못하면 같은 step 을 고쳐 그린으로 만든다. 그래도 못 풀면 OPEN(또는 HALT)로 남긴다.
-4) docs/PROGRESS.md 의 '## 다음 할 일'을 다음 step 으로 갱신하고
-   (진행 로그 1줄 append: \`<stepID> <한 일> <테스트 결과>\`, 끝난 OPEN: 줄 제거) '턴을 종료'한다.
+4) 진행 상태를 갱신하고 '턴을 종료'한다:
+   - docs/BUILD_ORDER.md 에서 방금 끝낸 step 의 '- [ ]'를 '- [x]'로 바꾼다(검증 게이트를 통과한 step 만).
+   - docs/PROGRESS.md 의 '## 다음 할 일'을 다음 step 으로 갱신하고, 진행 로그 1줄 append
+     (\`<stepID> <한 일> <테스트 결과>\`), 끝난 OPEN: 줄 제거.
 
 [미해결] 지금 못 풀거나 사람이 정해야 할 항목은 docs/PROGRESS.md 에
   'OPEN: <내용>' 또는 'OPEN[01]: <내용>' 줄로 남긴다(줄 시작·콜론 필수).
@@ -118,11 +125,22 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+// 붙여넣기 후 Enter까지의 정착 지연(ms). 너무 짧으면 turn 종료 직후 입력창이 paste를
+// 커밋하기 전에 Enter가 도착하거나, paste-end와 Enter가 한 read로 합쳐져 '제출' 대신
+// 본문 줄바꿈으로 흡수되어 글자만 들어가고 멈춘다(간헐). injectSlashCommand의 여유와 맞춤.
+const PASTE_SETTLE_MS = 300;
+
 /// 운영 프롬프트(여러 줄 가능)를 입력창에 붙여넣고 제출한다.
 export async function injectPrompt(sessionId: string, text: string): Promise<void> {
   await ptyWrite(sessionId, PASTE_START + text + PASTE_END);
   // 붙여넣기가 입력 버퍼에 반영될 시간을 준 뒤 Enter (paste와 Enter가 한 chunk로 합쳐지지 않게).
-  await delay(120);
+  await delay(PASTE_SETTLE_MS);
+  await ptyWrite(sessionId, ENTER);
+}
+
+/// 이미 입력창에 떠 있는(붙여넣어졌으나 미제출된) 텍스트를 Enter만으로 제출한다.
+/// 제출 워치독이 'UserPromptSubmit 미수신' 시 Enter를 재전송할 때 사용한다(본문 재전송 X).
+export async function injectEnter(sessionId: string): Promise<void> {
   await ptyWrite(sessionId, ENTER);
 }
 
@@ -197,8 +215,18 @@ OPEN[01]: (열린 결정/의문이 있으면. 없으면 이 줄 삭제)
 ## 진행 로그
 - (턴마다 한 줄씩 append)
 
-### 2) docs/BUILD_ORDER.md — 작업 정의
-CLAUDE.md의 범위를 '턴 하나에 끝낼 수 있는 단계들의 순서'로 분해해 적어라. 큰 Phase로 묶고 그 안을 세부 단계로.
+### 2) docs/BUILD_ORDER.md — 작업 정의 (형식 엄수: 체크박스)
+CLAUDE.md의 범위를 '턴 하나에 끝낼 수 있는 단계들의 순서'로 분해해 적어라.
+Sidabari4Loop의 '진행' 화면이 이 파일을 읽어 전체 진행률을 보여주므로 아래 형식을 지켜라:
+- 큰 묶음은 '## Phase N — 제목' 헤딩으로, 그 안의 세부 단계는 '- [ ] STEP-ID 설명' 체크박스로 적는다.
+- 모든 단계는 미완료 '- [ ]'로 시작한다(지금은 아무것도 [x]로 체크하지 마라 — 아직 빌드 전이다).
+- 자율 루프가 각 단계를 끝낼 때마다 그 줄을 '- [x]'로 바꾼다(진행 표시의 단일 기준).
+골격:
+## Phase 1 — 기반
+- [ ] FND-010 (첫 단계 설명)
+- [ ] FND-020 (다음 단계 설명)
+## Phase 2 — 핵심 기능
+- [ ] ...
 
 ## 규칙
 - 사람에게 질문으로 멈추지 마라. 합리적 기본값으로 진행하되, 정말 사람이 정해야 할 핵심 결정은

@@ -8,6 +8,7 @@ import {
   getContextUsage,
   injectClear,
   injectCompact,
+  injectEnter,
   injectPrompt,
   readProjectText,
 } from "@/lib/supervisor";
@@ -46,6 +47,13 @@ const COMPACT_WAIT_MS = 1_800_000; // 30분 (대기 한도 — 정상 압축은 
 //   계속 멈추면 루프 정지. 정상 Stop(턴 완료)이 오면 카운터를 리셋한다.
 const STALL_NOTIFICATION_TYPE = "idle_prompt";
 const MAX_STALL_NUDGES = 2;
+// 운영 프롬프트 주입 후 'UserPromptSubmit'(=제출됨) 신호를 기다리는 시간. 이 안에 신호가 오면
+// 제출 성공으로 보고 아무것도 안 한다. 신호가 없으면 Enter가 미제출된 것으로 보고 Enter만 재전송한다
+// (간헐 버그: paste 직후 Enter가 합쳐지거나 너무 일러 글자만 입력되고 멈추는 현상).
+const SUBMIT_CONFIRM_MS = 3000;
+// Enter 재전송 최대 횟수. 초과해도 '루프를 멈추지 않고' 넛지만 중단한 뒤 Stop을 계속 기다린다 —
+// UserPromptSubmit 훅이 미설치면 신호가 영영 안 오므로, 여기서 정지하면 정상 루프를 오정지시킨다.
+const MAX_SUBMIT_NUDGES = 2;
 
 export function SupervisorController() {
   const active = useAppStore((s) => s.supervisorActive);
@@ -66,6 +74,12 @@ export function SupervisorController() {
   const stallNudgesRef = useRef(0);
   const resetTimerRef = useRef<number | null>(null);
   const resetAttemptsRef = useRef(0);
+  // 제출 워치독 — 운영 프롬프트 주입 후 'UserPromptSubmit'을 기다리며, 없으면 Enter를 재전송.
+  const submitPendingRef = useRef(false);
+  const submitTimerRef = useRef<number | null>(null);
+  const submitNudgesRef = useRef(0);
+  // 이 루프 동안 UserPromptSubmit을 한 번이라도 받았는지(훅 미설치 진단용).
+  const sawUserPromptRef = useRef(false);
   const cfgRef = useRef<{
     prompt: string;
     maxIter: number;
@@ -82,10 +96,75 @@ export function SupervisorController() {
     }
   }
 
+  // 제출 워치독 해제 — 타이머/상태 정리.
+  function clearSubmitWatch() {
+    if (submitTimerRef.current !== null) {
+      window.clearTimeout(submitTimerRef.current);
+      submitTimerRef.current = null;
+    }
+    submitPendingRef.current = false;
+    submitNudgesRef.current = 0;
+  }
+
+  // 제출 워치독 무장 — SUBMIT_CONFIRM_MS 내 UserPromptSubmit이 없으면 Enter 재전송.
+  function armSubmitWatch() {
+    if (submitTimerRef.current !== null) window.clearTimeout(submitTimerRef.current);
+    submitPendingRef.current = true;
+    submitNudgesRef.current = 0;
+    submitTimerRef.current = window.setTimeout(
+      () => void onSubmitTimeout(),
+      SUBMIT_CONFIRM_MS,
+    );
+  }
+
+  // 제출 미확인 시 Enter만 재전송(본문 재전송 X). 한도 초과 시 넛지 중단(루프는 유지).
+  async function onSubmitTimeout() {
+    if (!activeRef.current || !submitPendingRef.current) return;
+    const sid = sidRef.current;
+    if (!sid) return;
+    if (submitNudgesRef.current < MAX_SUBMIT_NUDGES) {
+      submitNudgesRef.current += 1;
+      const hint = sawUserPromptRef.current
+        ? ""
+        : " (UserPromptSubmit 신호가 한 번도 없었습니다 — 설정 → [훅 설치]를 재실행하세요)";
+      addEvent(
+        "SYSTEM",
+        `supervisor: 제출 미확인 — Enter 재전송 (${submitNudgesRef.current}/${MAX_SUBMIT_NUDGES})${hint}`,
+      );
+      try {
+        await injectEnter(sid);
+      } catch (e) {
+        addEvent(
+          "SYSTEM",
+          `supervisor: Enter 재전송 실패 (${e instanceof Error ? e.message : String(e)})`,
+        );
+      }
+      submitTimerRef.current = window.setTimeout(
+        () => void onSubmitTimeout(),
+        SUBMIT_CONFIRM_MS,
+      );
+    } else {
+      addEvent(
+        "SYSTEM",
+        "supervisor: 제출 미확인 — Enter 재전송 한도 도달, 넛지 중단(Stop 계속 대기)",
+      );
+      submitPendingRef.current = false;
+      submitTimerRef.current = null;
+      submitNudgesRef.current = 0;
+    }
+  }
+
+  // 운영 프롬프트를 주입하고 제출 워치독을 무장한다(미제출 멈춤 대비).
+  async function submitPrompt(sid: string, prompt: string) {
+    await injectPrompt(sid, prompt);
+    armSubmitWatch();
+  }
+
   // 루프 정지 — setActive(false)가 아래 active effect의 cleanup도 트리거한다.
   function stopLoop(reason: string) {
     addEvent("SYSTEM", `supervisor: 루프 정지 — ${reason}`);
     clearResetTimeout();
+    clearSubmitWatch();
     stateRef.current = "running";
     handlingRef.current = false;
     resetAttemptsRef.current = 0;
@@ -209,6 +288,8 @@ export function SupervisorController() {
     stateRef.current = "running";
     handlingRef.current = false;
     stallNudgesRef.current = 0;
+    clearSubmitWatch();
+    sawUserPromptRef.current = false;
     iterRef.current = 1;
     setIteration(1);
     // 낡은 운영 프롬프트 경고(차단은 안 함) — 옛 명칭은 현재 계약과 어긋나 루프가 멈추거나
@@ -221,7 +302,7 @@ export function SupervisorController() {
     }
     addEvent("SYSTEM", "supervisor: 루프 시작 — 운영 프롬프트 주입 (#1)");
     try {
-      await injectPrompt(sid, prompt);
+      await submitPrompt(sid, prompt);
     } catch (e) {
       stopLoop(`프롬프트 주입 실패 (${e instanceof Error ? e.message : String(e)})`);
     }
@@ -230,7 +311,8 @@ export function SupervisorController() {
   async function onStop(transcriptPath?: string) {
     if (handlingRef.current) return; // 같은 Stop 중복 처리 방지
     handlingRef.current = true;
-    // 턴이 정상적으로 끝났다 = 멈춤에서 회복됨 → 스톨 넛지 카운터 리셋.
+    // 턴이 정상적으로 끝났다 = 직전 제출이 성공해 턴이 돌았다 → 제출 워치독·스톨 넛지 정리.
+    clearSubmitWatch();
     stallNudgesRef.current = 0;
     try {
       const cfg = cfgRef.current;
@@ -291,7 +373,7 @@ export function SupervisorController() {
       if (cfg.resetMode === "none") {
         addEvent("SYSTEM", `supervisor: 계속 — 리셋 없이 프롬프트만 재주입 (#${next})`);
         try {
-          await injectPrompt(sid, cfg.prompt);
+          await submitPrompt(sid, cfg.prompt);
         } catch (e) {
           stopLoop(`프롬프트 재주입 실패 (${e instanceof Error ? e.message : String(e)})`);
         }
@@ -318,7 +400,7 @@ export function SupervisorController() {
             `supervisor: 계속 — 컨텍스트 ${pct}% < 임계 ${cfg.compactThreshold}%, 압축 생략·재주입 (#${next})`,
           );
           try {
-            await injectPrompt(sid, cfg.prompt);
+            await submitPrompt(sid, cfg.prompt);
           } catch (e) {
             stopLoop(`프롬프트 재주입 실패 (${e instanceof Error ? e.message : String(e)})`);
           }
@@ -361,7 +443,7 @@ export function SupervisorController() {
       `supervisor: Claude 멈춤 감지(idle) — 운영 프롬프트 재주입 넛지 (${stallNudgesRef.current}/${MAX_STALL_NUDGES})`,
     );
     try {
-      await injectPrompt(sid, cfg.prompt);
+      await submitPrompt(sid, cfg.prompt);
     } catch (e) {
       stopLoop(`넛지 재주입 실패 (${e instanceof Error ? e.message : String(e)})`);
     }
@@ -379,7 +461,7 @@ export function SupervisorController() {
     const label = cfg.resetMode === "compact" ? "압축 완료" : "새 세션 준비됨";
     addEvent("SYSTEM", `supervisor: ${label} — 운영 프롬프트 재주입 (#${iterRef.current})`);
     try {
-      await injectPrompt(sid, cfg.prompt);
+      await submitPrompt(sid, cfg.prompt);
     } catch (e) {
       stopLoop(`프롬프트 재주입 실패 (${e instanceof Error ? e.message : String(e)})`);
     }
@@ -409,6 +491,10 @@ export function SupervisorController() {
       ) {
         // 작업해야 할 상태(running)에서 Claude가 입력 대기로 멈춤 = 스톨.
         void onStall();
+      } else if (kind === "user-prompt") {
+        // 프롬프트가 실제로 '제출됨' = 주입 성공. 제출 워치독을 해제(불필요한 Enter 재전송 방지).
+        sawUserPromptRef.current = true;
+        if (submitPendingRef.current) clearSubmitWatch();
       }
     })
       .then((fn) => {
@@ -430,6 +516,7 @@ export function SupervisorController() {
       void startLoop();
     } else {
       clearResetTimeout();
+      clearSubmitWatch();
       stateRef.current = "running";
       handlingRef.current = false;
     }

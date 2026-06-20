@@ -52,21 +52,34 @@ function ConsoleLine({ event }: { event: ConsoleEvent }) {
   );
 }
 
-export function ConsolePanel() {
-  const events = useAppStore((s) => s.consoleEvents);
+/// 하단 패널 타이틀바의 'Hook 콘솔' 탭 우측 액션 — 컨텍스트 점유율 + 콘솔 비우기.
+export function ConsoleActions() {
   const clearConsole = useAppStore((s) => s.clearConsole);
   const usage = useAppStore((s) => s.contextUsage);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const { isFocused, onMouseDown } = usePanelFocus("console");
   const usagePct = usage ? Math.round(usage.ratio * 100) : null;
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [events.length]);
-
   return (
-    <div className="flex h-full flex-col gap-[3px] bg-background" onMouseDown={onMouseDown}>
+    <>
+      {usage && usagePct !== null && (
+        <span
+          className={cn("font-mono text-[11px]", usageColor(usage.ratio))}
+          title={`컨텍스트 입력 토큰 ${usage.totalInputTokens.toLocaleString()} / ${usage.contextWindow.toLocaleString()}`}
+        >
+          컨텍스트 {usagePct}% · {fmtTokens(usage.totalInputTokens)}/
+          {fmtTokens(usage.contextWindow)}
+        </span>
+      )}
+      <Button size="icon-xs" variant="ghost" onClick={clearConsole} title="콘솔 비우기">
+        <Trash2 />
+      </Button>
+    </>
+  );
+}
+
+/// 하단 패널 — Hook 콘솔(이벤트 로그). 포커스 단위 "console".
+export function ConsolePanel() {
+  const { isFocused, onMouseDown } = usePanelFocus("console");
+  return (
+    <div className="flex h-full flex-col bg-background" onMouseDown={onMouseDown}>
       <div
         className={cn(
           "mx-0.5 mt-0.5 flex items-center justify-between gap-2 rounded-md px-3 py-0.5 transition-colors",
@@ -75,32 +88,33 @@ export function ConsolePanel() {
       >
         <span className="text-xs font-semibold text-card-foreground">Hook 콘솔</span>
         <div className="flex items-center gap-2">
-          {usage && usagePct !== null && (
-            <span
-              className={cn("font-mono text-[11px]", usageColor(usage.ratio))}
-              title={`컨텍스트 입력 토큰 ${usage.totalInputTokens.toLocaleString()} / ${usage.contextWindow.toLocaleString()}`}
-            >
-              컨텍스트 {usagePct}% · {fmtTokens(usage.totalInputTokens)}/
-              {fmtTokens(usage.contextWindow)}
-            </span>
-          )}
-          <Button
-            size="icon-xs"
-            variant="ghost"
-            onClick={clearConsole}
-            title="콘솔 비우기"
-          >
-            <Trash2 />
-          </Button>
+          <ConsoleActions />
         </div>
       </div>
-      <div ref={scrollRef} className="flex-1 space-y-0.5 overflow-auto px-3 py-2">
-        {events.length === 0 ? (
-          <div className="text-xs text-muted-foreground">기록 없음</div>
-        ) : (
-          events.map((e) => <ConsoleLine key={e.id} event={e} />)
-        )}
+      <div className="mx-0.5 min-h-0 flex-1">
+        <ConsoleBody />
       </div>
+    </div>
+  );
+}
+
+/// 'Hook 콘솔' 본문 — 이벤트 로그 목록(자동 스크롤).
+export function ConsoleBody() {
+  const events = useAppStore((s) => s.consoleEvents);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [events.length]);
+
+  return (
+    <div ref={scrollRef} className="h-full space-y-0.5 overflow-auto px-3 py-2">
+      {events.length === 0 ? (
+        <div className="text-xs text-muted-foreground">기록 없음</div>
+      ) : (
+        events.map((e) => <ConsoleLine key={e.id} event={e} />)
+      )}
     </div>
   );
 }
