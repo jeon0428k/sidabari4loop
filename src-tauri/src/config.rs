@@ -33,18 +33,10 @@ impl Default for ClaudeCodeSession {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClaudeCodeSessions {
     pub main: ClaudeCodeSession,
-}
-
-impl Default for ClaudeCodeSessions {
-    fn default() -> Self {
-        Self {
-            main: ClaudeCodeSession::default(),
-        }
-    }
 }
 
 // UI 토글. 콘솔 verbose 미러링, PreToolUse 게이트 활성 등.
@@ -73,18 +65,13 @@ impl Default for UiConfig {
 //  - Compact: /compact — 대화를 요약 압축, 같은 세션 유지(SessionStart source=compact). 컨텍스트 보존.
 //  - None:    리셋 없음 — /clear·/compact 모두 안 하고 운영 프롬프트만 재주입. 턴이 끝나므로
 //             Claude Code의 auto-compact가 경계에서 컨텍스트를 관리한다(가장 가벼운 기본 정책).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ContextResetMode {
     Clear,
+    #[default]
     Compact,
     None,
-}
-
-impl Default for ContextResetMode {
-    fn default() -> Self {
-        ContextResetMode::Compact
-    }
 }
 
 // Supervisor 자동 연속 루프 설정.

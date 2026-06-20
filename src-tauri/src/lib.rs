@@ -4,6 +4,7 @@ mod hook_installer;
 mod hooks_bus;
 mod pty;
 mod supervisor;
+mod window_clamp;
 
 use std::sync::Arc;
 
@@ -16,6 +17,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        // window-state 복원 "뒤에" 등록해야 한다 — 복원된 기하를 화면 안으로 보정한다.
+        // (window_clamp.rs 참조: window-state 는 SIZE 를 무조건, POSITION 을 약한 교차검사로 복원함)
+        .plugin(window_clamp::plugin())
         .plugin(tauri_plugin_notification::init())
         .manage(Arc::new(pty::PtyState::default()))
         .setup(|app| {
